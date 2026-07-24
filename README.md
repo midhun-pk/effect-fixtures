@@ -66,8 +66,21 @@ defaults; your own codecs use [generators](#generators).
 
 ### `createFixture(schema, options?)`
 
-Returns a `Fixture<Schema.Encoded<S>>`: a function taking a deep-partial
-override, with a `.raw()` variant that skips validation.
+Returns a `Fixture`: a function taking a deep-partial override and returning
+the **encoded** value, with two variants:
+
+- `.raw(overrides?)` — same build, skipping validation, for negative tests
+  that need a payload the schema rejects.
+- `.decoded(overrides?)` — same build, returning `Schema.Type<S>` instead of
+  `Schema.Encoded<S>`: dates as `Date`s, class instances constructed,
+  `optionalWith` defaults applied. For the test that consumes the domain value
+  (rendering a component) rather than sending the wire payload. It reuses the
+  decode that validation already performs, so it costs nothing extra.
+
+```ts
+makeOrder();                        // { placed_at: '2026-…' }  — wire payload
+makeOrder.decoded();                // { placed_at: Date }      — domain value
+```
 
 | option | what it does |
 |---|---|

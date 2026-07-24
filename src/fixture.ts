@@ -105,13 +105,20 @@ export interface FixtureOptions<I> {
 }
 
 /** Builds one fixture. `raw` skips validation, for deliberately invalid input. */
-export interface Fixture<I> {
+export interface Fixture<I, A = unknown> {
   (overrides?: DeepPartial<I>): I;
   /**
    * Same build, without the decode check. Negative tests need to send a payload
    * the schema rejects; that is the only reason to reach for this.
    */
   readonly raw: (overrides?: DeepPartial<I>) => I;
+  /**
+   * Same build, but returning the DECODED value — dates as `Date`s, class
+   * instances constructed, `optionalWith` defaults applied. For the test that
+   * consumes the domain value rather than sending the wire payload. Validation
+   * is the same decode, so it costs nothing extra and fails identically.
+   */
+  readonly decoded: (overrides?: DeepPartial<I>) => A;
 }
 
 /** Constraints collected off a refinement chain, as JSON Schema keywords. */
@@ -665,7 +672,7 @@ const mergeOverrides = (defaults: unknown, overrides: unknown): unknown => {
 export const createFixture = <A, I, R>(
   schema: Schema.Schema<A, I, R>,
   options: FixtureOptions<I> = {},
-): Fixture<I> => {
+): Fixture<I, A> => {
   const decode = Schema.decodeUnknownSync(schema as Schema.Schema<A, I, never>);
   const label = identifierOf(schema.ast) ?? 'fixture';
 
@@ -698,11 +705,10 @@ export const createFixture = <A, I, R>(
     ) as I;
   };
 
-  const fixture = (overrides?: DeepPartial<I>): I => {
-    const value = build(overrides);
-
+  // Validation IS a decode; returning the result is what makes `decoded` free.
+  const validate = (value: I): A => {
     try {
-      decode(value);
+      return decode(value);
     } catch (cause) {
       throw new Error(
         `effect-fixtures: the generated ${label} does not satisfy its own schema.\n`
@@ -711,11 +717,16 @@ export const createFixture = <A, I, R>(
         { cause },
       );
     }
+  };
 
+  const fixture = (overrides?: DeepPartial<I>): I => {
+    const value = build(overrides);
+    validate(value);
     return value;
   };
 
   fixture.raw = build;
+  fixture.decoded = (overrides?: DeepPartial<I>): A => validate(build(overrides));
 
   return fixture;
 };

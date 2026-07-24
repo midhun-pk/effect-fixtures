@@ -339,6 +339,48 @@ describe('validation', () => {
   });
 });
 
+describe('decoded', () => {
+  it('returns the decoded value while the plain call stays encoded', () => {
+    const fixture = createFixture(S.Struct({
+      when: S.Date,
+      count: S.NumberFromString,
+    }));
+
+    const encoded = fixture();
+    const decoded = fixture.decoded();
+
+    expect(typeof encoded.when).toBe('string');
+    expect(encoded.count).toBe('1');
+    expect(decoded.when).toBeInstanceOf(Date);
+    expect(decoded.count).toBe(1);
+  });
+
+  it('materialises optionalWith defaults that stay off the wire', () => {
+    const fixture = createFixture(S.Struct({
+      retries: S.optionalWith(S.Number, { default: () => 3 }),
+      name: S.String,
+    }));
+
+    expect(fixture()).not.toHaveProperty('retries');
+    expect(fixture.decoded().retries).toBe(3);
+  });
+
+  it('constructs class instances for Schema.Class', () => {
+    class User extends S.Class<User>('DecodedUser')({ id: S.UUID, name: S.String }) {}
+
+    const user = createFixture(User).decoded({ name: 'Ada' });
+
+    expect(user).toBeInstanceOf(User);
+    expect(user.name).toBe('Ada');
+  });
+
+  it('rejects an invalid override just like the encoded build', () => {
+    const fixture = createFixture(S.Struct({ name: S.String.pipe(S.minLength(3)) }));
+
+    expect(() => fixture.decoded({ name: 'ab' })).toThrow(/name/);
+  });
+});
+
 describe('shapes it cannot generate', () => {
   it('explains an opaque declaration instead of emitting something invalid', () => {
     const fixture = createFixture(S.Struct({ opt: S.OptionFromSelf(S.String) }));
