@@ -157,9 +157,6 @@ what `generators` is for, and the error says so.
   randomized exploration of the value space, use Effect's own
   [`Arbitrary`](https://effect.website/docs/schema/arbitrary/) with fast-check;
   the two are complementary.
-- **Business validity beyond the schema.** The output is schema-valid, not
-  domain-meaningful: a generated `key_size` is `1`, not `2048`. Encode domain
-  rules in the schema (refinements) or supply them via `defaults`/`generators`.
 
 ## License
 
