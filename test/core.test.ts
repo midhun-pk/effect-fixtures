@@ -68,10 +68,10 @@ describe('defaults: what a bare call generates', () => {
 
   it('satisfies a pattern refinement when a candidate matches', () => {
     const fixture = createFixture(S.Struct({
-      name: S.String.pipe(S.pattern(/^[^\n]*[^\s\n][^\n]*$/)),
+      slug: S.String.pipe(S.pattern(/^[a-z][a-z0-9-]*$/)),
     }));
 
-    expect(fixture().name).toMatch(/^[^\n]*[^\s\n][^\n]*$/);
+    expect(fixture().slug).toMatch(/^[a-z][a-z0-9-]*$/);
   });
 
   it('names the field when no candidate can match the pattern', () => {
@@ -122,10 +122,10 @@ describe('defaults: what a bare call generates', () => {
   });
 
   it('reads the fields a struct spreads in', () => {
-    const Settings = S.Struct({ approval_required: S.Boolean });
-    const fixture = createFixture(S.Struct({ name: S.String, ...Settings.fields }));
+    const Flags = S.Struct({ archived: S.Boolean });
+    const fixture = createFixture(S.Struct({ name: S.String, ...Flags.fields }));
 
-    expect(fixture()).toHaveProperty('approval_required', false);
+    expect(fixture()).toHaveProperty('archived', false);
   });
 
   it('prefers a `default` annotation over a generated value', () => {
