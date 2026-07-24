@@ -1,0 +1,50 @@
+{
+  "name": "effect-fixtures",
+  "version": "0.1.0",
+  "description": "Generate configurable test fixtures from Effect schemas: minimal valid payloads, deep overrides, schema-validated output.",
+  "keywords": [
+    "effect",
+    "schema",
+    "fixtures",
+    "test-data",
+    "testing",
+    "factory",
+    "mock"
+  ],
+  "license": "MIT",
+  "author": "Midhun P K",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/midhun-pk/effect-fixtures.git"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "effect": ">=3.10.0 <4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "effect": "^3.22.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.0.0"
+  }
+}
