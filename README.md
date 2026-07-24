@@ -2,13 +2,6 @@
 
 Generate configurable test fixtures from [Effect](https://effect.website) schemas.
 
-Your schema already describes every payload your API accepts. Hand-written
-fixture objects duplicate that description and then rot: a field goes required
-upstream and every fixture keeps compiling while the API starts rejecting the
-request. `effect-fixtures` reads the schema's AST at runtime instead, so a
-schema change shows up the moment the fixture is built — as a failing test that
-names the field, not as a silent 400.
-
 ```ts
 import { Schema as S } from 'effect';
 import { createFixture, GENERATE } from 'effect-fixtures';
