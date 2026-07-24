@@ -28,14 +28,21 @@ const Order = S.Struct({
 const makeOrder = createFixture(Order, { defaults: { status: 'placed' } });
 
 makeOrder();
-// { id: '43544fba-…', reference: 'reference-mrxlje9d1', status: 'placed',
-//   shipping: { method: 'standard', cost: 1 } }
+// {
+//      id: '43544fba-…',
+//      reference: 'reference-mrxlje9d1',
+//      status: 'placed',
+//      shipping: {
+//          method: 'standard',
+//          cost: 1,
+//      }
+// }
 
-makeOrder({ reference: 'ORD-1' });            // one field pinned
-makeOrder({ shipping: { method: 'express' } });// nested; `cost` still generated
-makeOrder({ placed_at: GENERATE });           // optional field in, value generated
-makeOrder({ placed_at: null });               // explicit null
-makeOrder.raw({ reference: '' });             // skip validation, for negative tests
+makeOrder({ reference: 'ORD-1' });              // one field pinned
+makeOrder({ shipping: { method: 'express' } }); // nested; `cost` still generated
+makeOrder({ placed_at: GENERATE });             // optional field in, value generated
+makeOrder({ placed_at: null });                 // explicit null
+makeOrder.raw({ reference: '' });               // skip validation, for negative tests
 ```
 
 ## The two rules
