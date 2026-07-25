@@ -1,4 +1,6 @@
-import { Option, Schema, SchemaAST as AST } from 'effect';
+import {
+  Either, Option, Schema, SchemaAST as AST,
+} from 'effect';
 
 /**
  * Build test fixtures by reading an Effect schema.
@@ -55,23 +57,61 @@ export type FieldGenerator = (ctx: FieldContext) => unknown;
 export const GENERATE: unique symbol = Symbol.for('effect-fixtures/GENERATE');
 
 /**
+ * Values that are overridden wholesale, never merged into. `Date` and
+ * `Uint8Array` are objects to JavaScript but leaves to a fixture — recursing
+ * into a Date's keys is never what anyone means.
+ */
+type LeafValue = string | number | boolean | bigint | symbol | Date | Uint8Array;
+
+/**
  * A recursively optional view of the encoded type. Overrides are matched
  * against this, so a nested field can be pinned without restating its siblings.
  */
 export type DeepPartial<T> =
   | typeof GENERATE
-  | (T extends ReadonlyArray<infer E> ? ReadonlyArray<DeepPartial<E>>
-    : T extends object ? { readonly [K in keyof T]?: DeepPartial<T[K]> | undefined }
-      : T);
+  | (T extends LeafValue | null | undefined ? T
+    : T extends ReadonlyArray<infer E> ? ReadonlyArray<DeepPartial<E>>
+      : T extends object ? { readonly [K in keyof T]?: DeepPartial<T[K]> | undefined }
+        : T);
 
-export interface FixtureOptions<I> {
+/**
+ * Overrides in EITHER vocabulary: each codec position accepts the wire value
+ * or the domain value (`string | Date` for a date codec), decided per field,
+ * so one call may mix the two. Non-codec positions have identical types on
+ * both sides and are unaffected. The walker resolves each supplied value with
+ * "encoded interpretation wins": if it satisfies the wire side it is used
+ * as-is, otherwise it is encoded through the codec at that position.
+ */
+export type FixtureOverrides<I, A> = unknown extends A ? DeepPartial<I> : OverrideValue<I, A>;
+
+type OverrideValue<I, A> =
+  | typeof GENERATE
+  | Extract<I, null | undefined>
+  | OverrideBody<NonNullable<I>, NonNullable<A>>;
+
+type OverrideBody<I, A> =
+  [I] extends [LeafValue] ? I | Extract<A, LeafValue>
+    : [I] extends [ReadonlyArray<infer EI>]
+      ? ReadonlyArray<OverrideValue<EI, [A] extends [ReadonlyArray<infer EA>] ? EA : unknown>>
+      : [I] extends [object]
+        ? {
+          readonly [K in keyof I]?:
+          OverrideValue<I[K], K extends keyof A ? A[K] : unknown> | undefined
+        }
+        : I | A;
+
+export interface FixtureOptions<I, A = unknown> {
   /**
    * Values merged into every build, before the per-call overrides. Use this for
    * the field whose generated default is technically valid but practically
    * useless in every test — `status: 'placed'` on an order whose generated
    * default would be `'draft'`, say.
+   *
+   * Evaluated ONCE, when the builder is created. A `new Date()` here freezes
+   * that instant into every build for the life of the process — "fresh per
+   * build" belongs in `generators`.
    */
-  readonly defaults?: DeepPartial<I>;
+  readonly defaults?: FixtureOverrides<I, A>;
   /**
    * Escape hatch for positions the AST can't describe on its own: an opaque
    * `Schema.declare`, or a string whose real format lives in a regex the
@@ -106,19 +146,27 @@ export interface FixtureOptions<I> {
 
 /** Builds one fixture. `raw` skips validation, for deliberately invalid input. */
 export interface Fixture<I, A = unknown> {
-  (overrides?: DeepPartial<I>): I;
+  (overrides?: FixtureOverrides<I, A>): I;
   /**
    * Same build, without the decode check. Negative tests need to send a payload
    * the schema rejects; that is the only reason to reach for this.
    */
-  readonly raw: (overrides?: DeepPartial<I>) => I;
+  readonly raw: (overrides?: FixtureOverrides<I, A>) => I;
   /**
    * Same build, but returning the DECODED value — dates as `Date`s, class
    * instances constructed, `optionalWith` defaults applied. For the test that
    * consumes the domain value rather than sending the wire payload. Validation
    * is the same decode, so it costs nothing extra and fails identically.
    */
-  readonly decoded: (overrides?: DeepPartial<I>) => A;
+  readonly decoded: (overrides?: FixtureOverrides<I, A>) => A;
+  /**
+   * The doors above, exposed as the primitives they compose. `decodeValue`
+   * turns a wire payload into the domain value (validating it on the way);
+   * `encodeOverrides` maps a mixed-vocabulary override object onto pure wire
+   * vocabulary without building anything.
+   */
+  readonly decodeValue: (value: I) => A;
+  readonly encodeOverrides: (overrides: FixtureOverrides<I, A>) => DeepPartial<I>;
 }
 
 /** Constraints collected off a refinement chain, as JSON Schema keywords. */
@@ -185,9 +233,15 @@ const uuidFrom = (random: () => number): string => {
 /** Annotation lookups all return `Option`; nothing here distinguishes absent from unset. */
 const some = Option.getOrUndefined;
 
-const isPlainObject = (value: unknown): value is Record<PropertyKey, unknown> => (
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-);
+/**
+ * Only bare `{}`-style objects are merged into; anything with a prototype —
+ * a `Date`, a `Uint8Array`, a class instance — is a value, not a container.
+ */
+const isPlainObject = (value: unknown): value is Record<PropertyKey, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+};
 
 /** `optional(NullOr(x))` nests unions three deep; flat is far easier to reason about. */
 const flattenUnion = (ast: AST.AST): ReadonlyArray<AST.AST> => (
@@ -198,6 +252,41 @@ const isNullLiteral = (ast: AST.AST): boolean => AST.isLiteral(ast) && ast.liter
 
 /** Strip refinements down to the node that actually says what the value *is*. */
 const baseOf = (ast: AST.AST): AST.AST => (AST.isRefinement(ast) ? baseOf(ast.from) : ast);
+
+/**
+ * Accept a supplied value in EITHER vocabulary at a codec position.
+ *
+ * Encoded interpretation wins: if the value already satisfies the wire side it
+ * is used untouched (so every existing call keeps its exact behaviour), and
+ * only otherwise is it encoded through the codec — a `Date` handed to a date
+ * codec comes out as the wire string. A value that fits neither side is
+ * returned as-is; the build's validation then rejects it with the field named,
+ * same as any bad override.
+ *
+ * Non-codec nodes return immediately: both vocabularies are the same type
+ * there, so there is nothing to decide.
+ */
+const reconcile = (ast: AST.AST, value: unknown): unknown => {
+  if (value === null || value === undefined) return value;
+
+  const base = baseOf(ast);
+
+  // `optional(NullOr(Codec))` wraps the codec in unions; the value belongs to
+  // the codec member, so resolve against that. Null/undefined were already
+  // returned above — they pick the union's other members, not the codec.
+  if (AST.isUnion(base)) {
+    const codec = flattenUnion(base).find((member) => AST.isTransformation(baseOf(member)));
+    return codec === undefined ? value : reconcile(codec, value);
+  }
+
+  if (!AST.isTransformation(base)) return value;
+
+  const node = Schema.make(ast);
+  if (Either.isRight(Schema.decodeUnknownEither(node)(value))) return value;
+
+  const encoded = Schema.encodeUnknownEither(node)(value);
+  return Either.isRight(encoded) ? encoded.right : value;
+};
 
 /**
  * Walk the refinement chain and merge every JSON Schema annotation on it.
@@ -435,22 +524,30 @@ const generate = (
   const identifier = identifierOf(ast);
   const here: FieldContext = { ...ctx, identifier };
 
+  // Liberal vocabulary: a supplied value at a codec node may be either side.
+  // Resolved here, per node, which is what lets one call mix wire strings and
+  // domain values across different fields.
+  const supplied = provided ? reconcile(ast, override) : override;
+
   // A scalar override is the answer; an object/array one still has to be
   // generated *through*, so its unspecified siblings get filled in.
-  if (provided && !isPlainObject(override) && !Array.isArray(override)) {
-    return override;
+  if (provided && !isPlainObject(supplied) && !Array.isArray(supplied)) {
+    return supplied;
   }
 
   if (!provided) {
     const generator = state.generators[here.path]
       ?? state.generators[here.field]
       ?? (identifier !== undefined ? state.generators[identifier] : undefined);
-    if (generator) return generator(here);
+    // Generators are a value source like any other, so their output gets the
+    // same either-vocabulary treatment: `() => new Date()` is enough for a
+    // date codec; the codec itself does the wire formatting.
+    if (generator) return reconcile(ast, generator(here));
 
     // A schema that documents itself already says what a good value looks like.
     const annotated = some(AST.getDefaultAnnotation(ast))
       ?? some(AST.getExamplesAnnotation(ast))?.[0];
-    if (annotated !== undefined) return annotated;
+    if (annotated !== undefined) return reconcile(ast, annotated);
 
     const builtin = identifier !== undefined ? builtinDefaults[identifier] : undefined;
     if (builtin) return builtin(here, state.random !== undefined);
@@ -512,18 +609,18 @@ const generate = (
       return {};
 
     case 'Suspend':
-      return generate(base.f(), here, override, provided, state, depth + 1);
+      return generate(base.f(), here, supplied, provided, state, depth + 1);
 
     case 'Union': {
-      const member = pickMember(flattenUnion(base), override, provided);
+      const member = pickMember(flattenUnion(base), supplied, provided);
       return member === undefined
         ? fail(here, 'the union has no members')
-        : generate(member, here, override, provided, state, depth + 1);
+        : generate(member, here, supplied, provided, state, depth + 1);
     }
 
     case 'TupleType': {
       const { elements, rest } = base;
-      const overrides = Array.isArray(override) ? override : undefined;
+      const overrides = Array.isArray(supplied) ? supplied : undefined;
 
       // Fixed-arity part. Optional elements follow the same rule as optional
       // struct fields: omitted unless the override reaches them. Effect only
@@ -567,7 +664,7 @@ const generate = (
     }
 
     case 'TypeLiteral': {
-      const source = isPlainObject(override) ? override : undefined;
+      const source = isPlainObject(supplied) ? supplied : undefined;
       const out: Record<PropertyKey, unknown> = {};
 
       for (const property of base.propertySignatures) {
@@ -655,6 +752,58 @@ const mergeOverrides = (defaults: unknown, overrides: unknown): unknown => {
 };
 
 /**
+ * Map a (possibly mixed-vocabulary) partial override object onto pure wire
+ * vocabulary, without generating anything. Mirrors the walk `generate` does,
+ * but only over the keys the caller supplied: codec positions run through
+ * `reconcile`, everything else passes through untouched. GENERATE, `null` and
+ * `undefined` are presence markers, not values, and survive unchanged.
+ */
+const mapToWire = (ast: AST.AST, value: unknown): unknown => {
+  if (value === GENERATE || value === null || value === undefined) return value;
+
+  const base = baseOf(ast);
+
+  if (AST.isTransformation(base)) {
+    const wire = reconcile(ast, value);
+    // A codec whose encoded side is itself structured (a Class, say) may take a
+    // partial object that neither side accepts whole; map its fields instead.
+    return isPlainObject(wire) || Array.isArray(wire)
+      ? mapToWire(AST.encodedBoundAST(ast), wire)
+      : wire;
+  }
+
+  if (AST.isSuspend(base)) return mapToWire(base.f(), value);
+
+  if (AST.isUnion(base)) {
+    const members = flattenUnion(base);
+    const codec = members.find((member) => AST.isTransformation(baseOf(member)));
+    if (codec) return mapToWire(codec, value);
+    const member = pickMember(members, value, true);
+    return member === undefined ? value : mapToWire(member, value);
+  }
+
+  if (AST.isTupleType(base) && Array.isArray(value)) {
+    return value.map((item, index) => {
+      const element = base.elements[index]?.type ?? base.rest[0]?.type;
+      return element === undefined ? item : mapToWire(element, item);
+    });
+  }
+
+  if (AST.isTypeLiteral(base) && isPlainObject(value)) {
+    const out: Record<PropertyKey, unknown> = {};
+    for (const key of Reflect.ownKeys(value)) {
+      const property = base.propertySignatures.find((p) => p.name === key);
+      const target = property?.type ?? base.indexSignatures[0]?.type;
+      const item = value[key];
+      out[key] = target === undefined ? item : mapToWire(target, item);
+    }
+    return out;
+  }
+
+  return value;
+};
+
+/**
  * Turn a schema into a fixture builder.
  *
  * ```ts
@@ -671,7 +820,7 @@ const mergeOverrides = (defaults: unknown, overrides: unknown): unknown => {
  */
 export const createFixture = <A, I, R>(
   schema: Schema.Schema<A, I, R>,
-  options: FixtureOptions<I> = {},
+  options: FixtureOptions<I, A> = {},
 ): Fixture<I, A> => {
   const decode = Schema.decodeUnknownSync(schema as Schema.Schema<A, I, never>);
   const label = identifierOf(schema.ast) ?? 'fixture';
@@ -679,7 +828,7 @@ export const createFixture = <A, I, R>(
   // The walk starts on the TYPE-side AST, not the encoded one, and collapses to
   // the wire shape per node as it descends. Converting the whole tree up front
   // would strip every identifier that sits on a transformation.
-  const build = (overrides?: DeepPartial<I>): I => {
+  const build = (overrides?: FixtureOverrides<I, A>): I => {
     const seeded = options.seed !== undefined;
     const state: BuildState = {
       generators: options.generators ?? {},
@@ -719,14 +868,18 @@ export const createFixture = <A, I, R>(
     }
   };
 
-  const fixture = (overrides?: DeepPartial<I>): I => {
+  const fixture = (overrides?: FixtureOverrides<I, A>): I => {
     const value = build(overrides);
     validate(value);
     return value;
   };
 
   fixture.raw = build;
-  fixture.decoded = (overrides?: DeepPartial<I>): A => validate(build(overrides));
+  fixture.decoded = (overrides?: FixtureOverrides<I, A>): A => validate(build(overrides));
+  fixture.decodeValue = validate;
+  fixture.encodeOverrides = (
+    overrides: FixtureOverrides<I, A>,
+  ): DeepPartial<I> => mapToWire(schema.ast, overrides) as DeepPartial<I>;
 
   return fixture;
 };

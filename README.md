@@ -82,6 +82,43 @@ makeOrder();                        // { placed_at: '2026-…' }  — wire paylo
 makeOrder.decoded();                // { placed_at: Date }      — domain value
 ```
 
+### Overrides speak either vocabulary
+
+At codec positions (fields whose encoded and decoded types differ), a supplied
+value may be **either side** — the wire string or the domain value — decided
+per field, so one call can mix the two:
+
+```ts
+makeOrder({ placed_at: '2026-01-01T00:00:00.000Z' });  // wire string
+makeOrder({ placed_at: new Date() });                   // Date; the codec encodes it
+makeOrder({
+  placed_at: '2026-01-01T00:00:00.000Z',                // pasted from a capture
+  shipped_at: new Date(Date.now() + 86_400_000),        // computed — mixed is fine
+});
+```
+
+The rule is "encoded interpretation wins": a value that already satisfies the
+wire side is used untouched; otherwise it is encoded through the codec at that
+position. This applies uniformly to per-call overrides, `defaults`, and
+`generators` — so a date convention can simply be
+`generators: { MyDateCodec: () => new Date() }` and the codec does its own wire
+formatting. The one ambiguity: a codec whose two sides share a type *and*
+transform values resolves as encoded, deterministically. `GENERATE`, explicit
+`null`, and omission are presence markers, not values, and are never converted.
+
+One footgun worth knowing: `defaults` are evaluated once, at builder-creation
+time — `defaults: { placed_at: new Date() }` freezes that instant into every
+build. "Fresh per build" belongs in `generators`.
+
+### Primitives
+
+The doors are compositions of two exposed primitives:
+
+- `.decodeValue(encoded)` — validating decode of a wire payload into the
+  domain value (`.decoded(o)` ≡ `decodeValue(build(o))`).
+- `.encodeOverrides(overrides)` — maps a mixed-vocabulary override object onto
+  pure wire vocabulary without building anything.
+
 | option | what it does |
 |---|---|
 | `defaults` | Merged into every build, below per-call overrides. For the field whose generated value is valid but useless — `status: 'placed'` when the generated default would be `'draft'`. |

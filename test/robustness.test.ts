@@ -187,6 +187,126 @@ describe('tuples', () => {
   });
 });
 
+describe('liberal vocabulary at codec nodes', () => {
+  const YearCodec = S.transform(S.String.pipe(S.pattern(/^\d{4}$/)), S.DateFromSelf, {
+    strict: true,
+    decode: (s) => new Date(Date.UTC(Number(s), 0, 1)),
+    encode: (d) => String(d.getUTCFullYear()),
+  }).annotations({ identifier: 'YearCodec' });
+
+  const Entity = S.Struct({
+    name: S.String,
+    year: YearCodec,
+    renewed: S.optional(S.NullOr(YearCodec)),
+  });
+
+  const fixture = createFixture(Entity, { generators: { YearCodec: () => '2026' } });
+  const date2030 = new Date(Date.UTC(2030, 0, 1));
+
+  it('covers all four in/out combinations', () => {
+    expect(fixture({ year: '2030' }).year).toBe('2030'); // encoded in, encoded out
+    expect(fixture({ year: date2030 }).year).toBe('2030'); // decoded in, encoded out
+    expect(fixture.decoded({ year: '2030' }).year).toEqual(date2030); // encoded in, decoded out
+    expect(fixture.decoded({ year: date2030 }).year).toEqual(date2030); // decoded in, decoded out
+  });
+
+  it('lets one call mix vocabularies across fields', () => {
+    const value = fixture({
+      year: '2029', // wire string, as copied from somewhere
+      renewed: new Date(Date.UTC(2031, 0, 1)), // Date, as computed
+    });
+
+    expect(value.year).toBe('2029');
+    expect(value.renewed).toBe('2031');
+  });
+
+  it('accepts either vocabulary from generators, so codecs do their own formatting', () => {
+    const dateGen = createFixture(Entity, {
+      generators: { YearCodec: () => new Date(Date.UTC(2026, 0, 1)) },
+    });
+
+    expect(dateGen().year).toBe('2026');
+  });
+
+  it('accepts either vocabulary from defaults', () => {
+    const defaulted = createFixture(Entity, {
+      defaults: { year: new Date(Date.UTC(2027, 0, 1)) },
+      generators: { YearCodec: () => '2026' },
+    });
+
+    expect(defaulted().year).toBe('2027');
+  });
+
+  it('feeds builtin codecs a Date override too', () => {
+    const withDate = createFixture(S.Struct({ when: S.Date }));
+    const at = new Date('2030-05-06T07:08:09.000Z');
+
+    expect(withDate({ when: at }).when).toBe('2030-05-06T07:08:09.000Z');
+  });
+
+  it('resolves the same-type ambiguity as encoded, deterministically', () => {
+    const Trim = S.transform(S.String, S.String, {
+      strict: true,
+      decode: (s) => s.trim(),
+      encode: (s) => s,
+    }).annotations({ identifier: 'Trim' });
+
+    // ' padded ' is a valid wire value, so the encoded interpretation wins and
+    // it is NOT round-tripped through encode.
+    expect(createFixture(S.Struct({ label: Trim }))({ label: ' padded ' }).label)
+      .toBe(' padded ');
+  });
+
+  it('still fails with the field named when the value fits neither side', () => {
+    expect(() => fixture({ year: 'not-a-year' })).toThrow(/year/);
+  });
+
+  it('leaves GENERATE and explicit null untouched', () => {
+    expect(fixture({ renewed: GENERATE }).renewed).toBe('2026');
+    expect(fixture({ renewed: null }).renewed).toBeNull();
+  });
+});
+
+describe('primitives the doors compose', () => {
+  const Iso = S.transform(S.String, S.DateFromSelf, {
+    strict: true,
+    decode: (s) => new Date(s),
+    encode: (d) => d.toISOString(),
+  }).annotations({ identifier: 'Iso' });
+
+  const Entity = S.Struct({
+    name: S.String,
+    at: Iso,
+    nested: S.Struct({ when: S.optional(Iso) }),
+  });
+
+  const fixture = createFixture(Entity, {
+    generators: { Iso: () => '2026-01-01T00:00:00.000Z' },
+  });
+
+  it('encodeOverrides maps mixed vocabulary onto pure wire vocabulary', () => {
+    const date = new Date('2030-05-06T07:08:09.000Z');
+
+    expect(fixture.encodeOverrides({
+      name: 'kept',
+      at: date,
+      nested: { when: date },
+    })).toEqual({
+      name: 'kept',
+      at: '2030-05-06T07:08:09.000Z',
+      nested: { when: '2030-05-06T07:08:09.000Z' },
+    });
+  });
+
+  it('decodeValue is the validating decode', () => {
+    const decoded = fixture.decodeValue(fixture());
+
+    expect(decoded.at).toBeInstanceOf(Date);
+    // @ts-expect-error -- deliberately malformed, to prove it validates.
+    expect(() => fixture.decodeValue({ name: 1 })).toThrow(/name/);
+  });
+});
+
 describe('other shapes', () => {
   it('generates template literals', () => {
     const fixture = createFixture(S.Struct({
