@@ -160,6 +160,14 @@ export interface Fixture<I, A = unknown> {
    */
   readonly decoded: (overrides?: FixtureOverrides<I, A>) => A;
   /**
+   * ONE build, in both shapes. Calling the fixture and then `decoded` is two
+   * builds — two tokens, two records — so asserting one against the other
+   * chases a record that never existed. This is for the test that sends the
+   * wire value and then asserts on the domain value it decodes to. No extra
+   * cost: validation is the decode, so the pair falls out of the single build.
+   */
+  readonly both: (overrides?: FixtureOverrides<I, A>) => { encoded: I; decoded: A };
+  /**
    * The doors above, exposed as the primitives they compose. `decodeValue`
    * turns a wire payload into the domain value (validating it on the way);
    * `encodeOverrides` maps a mixed-vocabulary override object onto pure wire
@@ -876,6 +884,10 @@ export const createFixture = <A, I, R>(
 
   fixture.raw = build;
   fixture.decoded = (overrides?: FixtureOverrides<I, A>): A => validate(build(overrides));
+  fixture.both = (overrides?: FixtureOverrides<I, A>): { encoded: I; decoded: A } => {
+    const encoded = build(overrides);
+    return { encoded, decoded: validate(encoded) };
+  };
   fixture.decodeValue = validate;
   fixture.encodeOverrides = (
     overrides: FixtureOverrides<I, A>,

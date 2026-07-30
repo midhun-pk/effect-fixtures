@@ -381,6 +381,38 @@ describe('decoded', () => {
   });
 });
 
+describe('both', () => {
+  it('returns one record in both shapes', () => {
+    const fixture = createFixture(S.Struct({
+      name: S.String,
+      when: S.Date,
+    }));
+
+    const { encoded, decoded } = fixture.both();
+
+    // Same record: the generated name carries the per-build token, so equality
+    // here is what separate fixture() / fixture.decoded() calls cannot give.
+    expect(decoded.name).toBe(encoded.name);
+    expect(typeof encoded.when).toBe('string');
+    expect(decoded.when).toBeInstanceOf(Date);
+  });
+
+  it('applies overrides to both shapes at once', () => {
+    const fixture = createFixture(S.Struct({ name: S.String }));
+
+    const { encoded, decoded } = fixture.both({ name: 'pinned' });
+
+    expect(encoded.name).toBe('pinned');
+    expect(decoded.name).toBe('pinned');
+  });
+
+  it('rejects an invalid override just like the other builds', () => {
+    const fixture = createFixture(S.Struct({ name: S.String.pipe(S.minLength(3)) }));
+
+    expect(() => fixture.both({ name: 'ab' })).toThrow(/name/);
+  });
+});
+
 describe('shapes it cannot generate', () => {
   it('explains an opaque declaration instead of emitting something invalid', () => {
     const fixture = createFixture(S.Struct({ opt: S.OptionFromSelf(S.String) }));
