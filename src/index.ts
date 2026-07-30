@@ -6,4 +6,5 @@ export {
   type FieldGenerator,
   type Fixture,
   type FixtureOptions,
+  type FixtureOverrides,
 } from './fixture.js';
