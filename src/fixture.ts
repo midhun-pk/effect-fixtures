@@ -202,10 +202,20 @@ interface BuildState {
 
 let builds = 0;
 
+/**
+ * Distinguishes this PROCESS. Time plus a per-process counter is unique only
+ * within one process — parallel test workers are separate processes whose
+ * counters all start at zero, so two workers' first builds in the same
+ * millisecond mint the SAME token. Four random base36 chars per process close
+ * that hole; a seeded build still bypasses the token entirely, so seeded
+ * output stays byte-identical.
+ */
+const processTag = Math.random().toString(36).slice(2, 6);
+
 /** Unique per build, short enough to stay readable inside a generated name. */
 const nextToken = (): string => {
   builds += 1;
-  return `${Date.now().toString(36)}${builds.toString(36)}`;
+  return `${Date.now().toString(36)}${processTag}${builds.toString(36)}`;
 };
 
 /** FNV-1a; a seed string has to become a PRNG state somehow. */
