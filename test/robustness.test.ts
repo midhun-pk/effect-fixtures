@@ -141,6 +141,83 @@ describe('discriminated unions', () => {
   });
 });
 
+describe('tagged unions without literal discriminators', () => {
+  // The shape literal tags cannot help with: arms told apart only by their
+  // KEY NAMES. First-arm picking would route `{on: {...}}` into the `{off}`
+  // struct, generate that arm's own fields, drop the caller's keys — and the
+  // result would still validate: schema-valid and silently the opposite of
+  // what was asked. These pin the key-fit selection.
+  const Rule = S.Union(
+    S.Struct({ off: S.Struct({}) }),
+    S.Struct({ on: S.Struct({ level: S.optional(S.Number) }) }),
+  );
+
+  it('routes an override into the arm whose keys it carries', () => {
+    const fixture = createFixture(Rule);
+
+    expect(fixture({ on: { level: 3 } })).toEqual({ on: { level: 3 } });
+    expect(fixture({ off: {} })).toEqual({ off: {} });
+  });
+
+  it('does the same at a nested position', () => {
+    const fixture = createFixture(S.Struct({
+      name: S.String,
+      rule: S.optional(Rule),
+    }));
+
+    expect(fixture({ rule: { on: {} } }).rule).toEqual({ on: {} });
+  });
+
+  it('distinguishes single-key arms (a duration-style union)', () => {
+    const Span = S.Union(
+      S.Struct({ seconds: S.Number }),
+      S.Struct({ minutes: S.Number }),
+      S.Struct({ hours: S.Number }),
+      S.Struct({ days: S.Number }),
+    );
+
+    expect(createFixture(Span)({ days: 30 })).toEqual({ days: 30 });
+  });
+
+  it('prefers the arm that PINS a literal the override matches', () => {
+    // Coverage alone ties here — both arms declare `tag` — so the matched
+    // literal is the evidence that must beat declaration order; the chosen
+    // arm shows itself through the sibling it generates.
+    const Tagged = S.Union(
+      S.Struct({ tag: S.String, note: S.String }),
+      S.Struct({ tag: S.Literal('exact'), size: S.Number }),
+    );
+
+    const value = createFixture(Tagged)({ tag: 'exact' });
+
+    expect(value).toEqual({ tag: 'exact', size: expect.any(Number) });
+    expect(value).not.toHaveProperty('note');
+  });
+
+  it('prefers a declared-property match over an index-signature absorption', () => {
+    // A Record arm absorbs ANY keys, so it must not outrank the struct that
+    // names the override's key explicitly.
+    const Sized = S.Union(
+      S.Record({ key: S.String, value: S.Number }),
+      S.Struct({ days: S.Number }),
+    );
+
+    expect(createFixture(Sized)({ days: 7 })).toEqual({ days: 7 });
+  });
+
+  it('keeps the first arm for an empty object override — the old tie-break', () => {
+    expect(createFixture(Rule)({})).toEqual({ off: {} });
+  });
+
+  it('falls back to the first object arm when no arm fits the keys', () => {
+    // STATUS QUO, documented: keys that land in no arm were dropped before
+    // key-fit picking existed and still are — the walker generates the
+    // fallback arm's own fields and the build's validation stays the
+    // arbiter. Tightening this to a loud failure is a separate decision.
+    expect(createFixture(Rule)({ typo: true } as never)).toEqual({ off: {} });
+  });
+});
+
 describe('optionalWith and property defaults', () => {
   it('leaves a field with a decode-side default off the wire', () => {
     const Entity = S.Struct({

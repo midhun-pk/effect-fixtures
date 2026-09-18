@@ -431,31 +431,77 @@ const makeNumber = (ctx: FieldContext, constraints: Constraints): number => {
 };
 
 /**
- * Score a union member against an object override by its literal fields — the
- * discriminated-union case. A literal the override contradicts disqualifies
- * the member; a literal it matches is evidence for it. `Union(Circle, Square)`
- * with `{ kind: 'square', … }` must generate a square, not the first member.
+ * Choose among a union's object-shaped members BY KEY FIT, for a plain-object
+ * override. "Any TypeLiteral will do" is not enough for tagged unions —
+ * `{off: {...}} | {on: {...}}` — where a first-arm pick would route the
+ * override into the WRONG struct: the walker then generates that arm's own
+ * required fields and drops the caller's keys, producing a value that is
+ * schema-valid and silently the opposite of what was asked.
+ *
+ * A member qualifies only when EVERY override key lands in it — on a declared
+ * property, or absorbed by an index signature (a Record member) — and no
+ * literal-only property contradicts the override's value for it (the
+ * discriminated-union case: `Union(Circle, Square)` with `{ kind: 'square' }`
+ * must generate a square). Among qualifiers, the best fit wins: declared-key
+ * matches count once — a property matched by name beats one absorbed by an
+ * index signature — and a MATCHED literal counts again on top, as evidence:
+ * the arm that PINS `kind` to the override's value outranks one that merely
+ * declares a string there. Declaration order breaks the remaining ties, so
+ * every pick that was already unambiguous stays identical.
+ *
+ * Members whose base is not a TypeLiteral (a Suspend thunk, a codec) are
+ * skipped here and left to the caller's fallback: resolving them safely needs
+ * the recursion-depth bookkeeping this predicate deliberately does not have.
  */
-const discriminatorScore = (
-  member: AST.AST,
-  override: Record<PropertyKey, unknown>,
-): number => {
-  const base = baseOf(member);
-  if (!AST.isTypeLiteral(base)) return -1;
+const bestObjectArm = (
+  members: ReadonlyArray<AST.AST>,
+  override: Record<string, unknown>,
+): AST.AST | undefined => {
+  const keys = Object.keys(override);
 
-  let score = 0;
-  for (const property of base.propertySignatures) {
-    const propertyBase = baseOf(property.type);
-    if (
-      AST.isLiteral(propertyBase)
-      && Object.prototype.hasOwnProperty.call(override, property.name)
-    ) {
-      if (override[property.name] !== propertyBase.literal) return -1;
-      score += 1;
+  // One member's fit score, or undefined for a member that cannot hold the
+  // override at all.
+  const fitOf = (member: AST.AST): number | undefined => {
+    const base = baseOf(member);
+    if (!AST.isTypeLiteral(base)) return undefined;
+
+    const props = [...base.propertySignatures.map(
+      (p) => [String(p.name), p.type] as const,
+    )];
+
+    // Literal-only properties the override addresses. Only a POSITIVE
+    // contradiction disqualifies — the property can hold nothing but
+    // literals and the value is not one of them; an omitted key, or a
+    // property that also admits non-literal values, proves nothing. A match
+    // is counted as extra evidence.
+    let literalMatches = 0;
+    for (const [name, type] of props) {
+      if (Object.prototype.hasOwnProperty.call(override, name)) {
+        const arms = flattenUnion(baseOf(type)).map(baseOf);
+        if (arms.every(AST.isLiteral)) {
+          if (!arms.some((literal) => literal.literal === override[name])) {
+            return undefined;
+          }
+          literalMatches += 1;
+        }
+      }
+    }
+
+    const names = new Set(props.map(([name]) => name));
+    const hasIndex = base.indexSignatures.length > 0;
+    const declared = keys.filter((k) => names.has(k)).length;
+    return hasIndex || declared === keys.length ? declared + literalMatches : undefined;
+  };
+
+  let best: { member: AST.AST; fit: number } | undefined;
+  for (const member of members) {
+    const fit = fitOf(member);
+    if (fit !== undefined && (best === undefined || fit > best.fit)) {
+      best = { member, fit };
     }
   }
 
-  return score;
+  return best?.member;
 };
 
 /**
@@ -477,17 +523,14 @@ const pickMember = (
   if (override === undefined) return members.find(AST.isUndefinedKeyword) ?? real[0];
 
   if (isPlainObject(override)) {
-    let best: AST.AST | undefined;
-    let bestScore = -1;
-    for (const member of real) {
-      const score = discriminatorScore(member, override);
-      if (score > bestScore) {
-        best = member;
-        bestScore = score;
-      }
-    }
-    if (best !== undefined) return best;
-    return real.find((m) => AST.isTypeLiteral(baseOf(m))) ?? real[0] ?? members[0];
+    // Key fit picks the member (see bestObjectArm). The fallback when nothing
+    // fits is the OLD first-object-arm behavior, on purpose: keys that land
+    // nowhere were dropped before this predicate existed too, and the build's
+    // validation remains the arbiter.
+    return bestObjectArm(real, override)
+      ?? real.find((m) => AST.isTypeLiteral(baseOf(m)))
+      ?? real[0]
+      ?? members[0];
   }
 
   // A scalar override: an exactly-equal literal member first, then the keyword
